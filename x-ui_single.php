@@ -1361,8 +1361,15 @@ function removeClient($location, $username)
             $username
         );
     }
+    // Delete from the inbound the client actually lives on; fall back to the panel default as before if it cannot be read.
+    $deleteInbound = $marzban_list_get['inboundid'];
+    $traffic = get_clinets($username, $location);
+    $trafficBody = is_array($traffic) && isset($traffic['body']) ? json_decode($traffic['body'], true) : null;
+    if (is_array($trafficBody) && !empty($trafficBody['obj']['inboundId'])) {
+        $deleteInbound = (int) $trafficBody['obj']['inboundId'];
+    }
     login($marzban_list_get['code_panel']);
-    $url = $marzban_list_get['url_panel'] . "/panel/api/inbounds/{$marzban_list_get['inboundid']}/delClientByEmail/" . $username;
+    $url = $marzban_list_get['url_panel'] . "/panel/api/inbounds/{$deleteInbound}/delClientByEmail/" . $username;
     $headers = array(
         'Accept: application/json',
         'Content-Type: application/json',
@@ -1373,7 +1380,7 @@ function removeClient($location, $username)
     $legacyStartedAt = microtime(true);
     $response = $req->post(array());
     if (function_exists('xui_log_http_call')) {
-        xui_log_http_call($marzban_list_get, 'legacy', 'POST', "/panel/api/inbounds/{$marzban_list_get['inboundid']}/delClientByEmail/" . $username, null, $response, (int) round((microtime(true) - $legacyStartedAt) * 1000), 'removeClient', $username);
+        xui_log_http_call($marzban_list_get, 'legacy', 'POST', "/panel/api/inbounds/{$deleteInbound}/delClientByEmail/" . $username, null, $response, (int) round((microtime(true) - $legacyStartedAt) * 1000), 'removeClient', $username);
     }
     @unlink(xuisingle_cookie_path());
     return $response;
