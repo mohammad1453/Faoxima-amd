@@ -248,7 +248,19 @@ function xpi_plan($pdo, $product, array $locationNames, array $post, $fetch = nu
             $stmt = $pdo->prepare('SELECT * FROM marzban_panel WHERE name_panel = ?');
             $stmt->execute(array($name));
             $panel = $stmt->fetch(PDO::FETCH_ASSOC);
-            if (!is_array($panel) || ($panel['type'] ?? '') !== 'x-ui_single') {
+            if (!is_array($panel)) {
+                // The product edit form stores HTML-escaped names; such panels cannot be matched at runtime.
+                $decoded = html_entity_decode($name, ENT_QUOTES, 'UTF-8');
+                if ($decoded !== $name) {
+                    $stmt->execute(array($decoded));
+                    $special = $stmt->fetch(PDO::FETCH_ASSOC);
+                    if (is_array($special) && ($special['type'] ?? '') === 'x-ui_single' && (!empty($post['inb_loaded'][$special['id']]) || !empty($post['inb_remove'][$special['id']]))) {
+                        $plan['errors'][] = "نام پنل «{$decoded}» شامل نویسه‌های خاص است و برای نگاشت اینباند پشتیبانی نمی‌شود؛ نام پنل را ساده کنید.";
+                    }
+                }
+                continue;
+            }
+            if (($panel['type'] ?? '') !== 'x-ui_single') {
                 continue;
             }
             $pid = (int) $panel['id'];

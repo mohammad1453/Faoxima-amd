@@ -130,10 +130,20 @@ function rxPanelNameCascade(PDO $pdo, string $oldName, ?string $newName): bool
                 }
             }
         }
+        if (!function_exists('xpi_cascade_panel_delete')) {
+            @include_once dirname(__DIR__, 3) . '/lib/XuiProductInbounds.php';
+        }
         if ($newName === null) {
+            $deletedPanelId = $run("SELECT id FROM marzban_panel WHERE name_panel = ?", [$oldName])->fetchColumn();
             $run("DELETE FROM marzban_panel WHERE name_panel = ?", [$oldName]);
+            if ($deletedPanelId !== false && function_exists('xpi_cascade_panel_delete')) {
+                xpi_cascade_panel_delete($pdo, (int) $deletedPanelId, $oldName);
+            }
         } else {
             $run("UPDATE marzban_panel SET name_panel = ? WHERE name_panel = ?", [$newName, $oldName]);
+            if (function_exists('xpi_cascade_panel_rename')) {
+                xpi_cascade_panel_rename($pdo, $oldName, $newName);
+            }
             $run("UPDATE invoice SET Service_location = ? WHERE Service_location = ?", [$newName, $oldName]);
             foreach ($optionalRefs as $ref) {
                 $run("UPDATE `{$ref[0]}` SET `{$ref[1]}` = ? WHERE `{$ref[1]}` = ?", [$newName, $oldName]);

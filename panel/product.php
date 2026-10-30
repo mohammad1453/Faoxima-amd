@@ -16,6 +16,7 @@ require_once __DIR__ . '/../function.php';
 if (!function_exists('xui_fail2ban_status') && is_file(__DIR__ . '/../x-ui_single.php')) {
     require_once __DIR__ . '/../x-ui_single.php';
 }
+require_once __DIR__ . '/lib/product_inbounds_ui.php';
 
 $query = $pdo->prepare("SELECT * FROM admin WHERE username=:username");
 $query->bindParam("username", $_SESSION["user"], PDO::PARAM_STR);
@@ -58,6 +59,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'fail2ban_check') {
 
 if (!empty($_POST['action']) && $_POST['action'] === 'bulk_delete') {
     $requestedIds = $_POST['ids'] ?? [];
+    xpi_delete_for_products($pdo, (array) $requestedIds);
     $deletedCount = fx_bulk_delete_ids($pdo, 'product', 'id', $requestedIds);
     fx_bulk_delete_redirect('product.php', count($requestedIds), $deletedCount);
 }
@@ -92,6 +94,8 @@ $panelTypeMap = [];
 foreach ($listpanel as $panelRow) {
     $panelTypeMap[$panelRow['name_panel']] = $panelRow['type'];
 }
+xpi_ensure_tables($pdo);
+$piMeta = fx_pi_meta($listpanel);
 
 $catQuery = $pdo->prepare("SELECT remark FROM category ORDER BY (position = 0) ASC, position ASC, id ASC");
 $catQuery->execute();
@@ -167,6 +171,13 @@ alert('محصول از قبل وجود دارد'); window.location.href='product
         $symbolicLimitEnabled = '0';
     }
 
+    // Per-panel inbound mapping is validated against the live panels before the product is created.
+    $piPlan = xpi_plan($pdo, null, $locationArr, $_POST);
+    if ($piPlan['errors']) {
+        echo "<script>alert(" . json_encode(implode("\n", $piPlan['errors']), JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) . "); window.location.href='product.php';</script>";
+        return;
+    }
+
     $stmt = $pdo->prepare("INSERT IGNORE INTO product (name_product,code_product,price_product,Volume_constraint,Service_time,Location,agent,data_limit_reset,note,category,hide_panel,one_buy_status,ip_limit,hwid_limit,symbolic_limit_enabled,symbolic_limit_users) VALUES (:name_product,:code_product,:price_product,:Volume_constraint,:Service_time,:Location,:agent,:data_limit_reset,:note,:category,:hide_panel,'0',:ip_limit,:hwid_limit,:symbolic_limit_enabled,:symbolic_limit_users)");
     $stmt->bindParam(':name_product',     $nameProduct, PDO::PARAM_STR);
     $stmt->bindParam(':code_product',     $randomString);
@@ -184,6 +195,14 @@ alert('محصول از قبل وجود دارد'); window.location.href='product
     $stmt->bindParam(':symbolic_limit_enabled', $symbolicLimitEnabled, PDO::PARAM_STR);
     $stmt->bindParam(':symbolic_limit_users',   $symbolicLimitUsers, PDO::PARAM_STR);
     $stmt->execute();
+    $newProductId = (int) $pdo->lastInsertId();
+    if ($newProductId > 0 && $stmt->rowCount() > 0) {
+        try {
+            xpi_apply_plan($pdo, $newProductId, $piPlan);
+        } catch (Throwable $e) {
+            error_log('[product] mapping save failed: ' . $e->getMessage());
+        }
+    }
 
     header("Location: product.php");
     exit;
@@ -191,6 +210,7 @@ alert('محصول از قبل وجود دارد'); window.location.href='product
 
 
 if (isset($_GET['removeid']) && $_GET['removeid'] !== '') {
+    xpi_delete_for_products($pdo, [$_GET['removeid']]);
     $stmt = $pdo->prepare("DELETE FROM product WHERE id = :id");
     $stmt->bindParam(':id', $_GET['removeid']);
     $stmt->execute();
@@ -319,6 +339,7 @@ if (isset($_GET['removeid']) && $_GET['removeid'] !== '') {
                                                 'hwid_limit' => $list['hwid_limit'] ?? '0',
                                                 'sym_en'   => $list['symbolic_limit_enabled'] ?? '0',
                                                 'sym_us'   => $list['symbolic_limit_users'] ?? '0',
+                                                'inbounds' => (object) xpi_get_mappings_for_product($pdo, (int) $list['id']),
                                             ], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS), ENT_QUOTES, 'UTF-8'); ?>)">
                                             <?php echo icon('copy', 'svg-icon'); ?>
                                         </button>
@@ -371,6 +392,7 @@ if (isset($_GET['removeid']) && $_GET['removeid'] !== '') {
                     <?php endforeach; ?>
                 </div>
                 <input type="hidden" name="namepanel_csv" id="add_product_panel_hidden" data-panel-hidden value="/all">
+                <div id="add_product_inbounds"></div>
             </div>
 
             <div class="form-group">
@@ -471,6 +493,7 @@ if (isset($_GET['removeid']) && $_GET['removeid'] !== '') {
                     <?php endforeach; ?>
                 </div>
                 <input type="hidden" name="namepanel_csv" id="clone_product_panel_hidden" data-panel-hidden value="/all">
+                <div id="clone_product_inbounds"></div>
             </div>
 
             <div class="form-group">
@@ -543,6 +566,7 @@ if (isset($_GET['removeid']) && $_GET['removeid'] !== '') {
 <script src="js/compact-badges.js?v=fx1"></script>
 <script src="js/order_modal.js?v=ord1"></script>
 <script src="js/bulk_price.js?v=bp4"></script>
+<script src="js/product-inbounds.js?v=pi1"></script>
 <script>
   var faoximaPanelTypeMap = <?php echo json_encode($panelTypeMap, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP); ?>;
   function faoximaToggleAll(master, formId) {
@@ -615,6 +639,15 @@ if (isset($_GET['removeid']) && $_GET['removeid'] !== '') {
   faoximaBindChipPicker('[data-category-picker]', '.chip[data-category-chip]', faoximaCategoryPickerSync);
   faoximaBindChipPicker('[data-panel-picker]', '.chip[data-panel-chip]', faoximaPanelPickerSync);
 
+  var faoximaPiMeta = <?php echo json_encode($piMeta, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP); ?>;
+  ['add', 'clone'].forEach(function (id) {
+    var root = document.getElementById(id + '_product_inbounds');
+    if (!root) return;
+    FxProductInbounds.init({
+      id: id, root: root, picker: document.getElementById(id + '_product_panel_picker'),
+      hidden: document.getElementById(id + '_product_panel_hidden'), meta: faoximaPiMeta, initial: {}, allowRemove: false
+    });
+  });
   function faoximaOpenClone(p) {
     document.getElementById('clone_name').value = p.name;
     document.getElementById('clone_price').value = window.FaoximaMoneyInput ? window.FaoximaMoneyInput.format(p.price) : p.price;
@@ -633,6 +666,8 @@ if (isset($_GET['removeid']) && $_GET['removeid'] !== '') {
     if (locPicker) {
       var locValues = String(p.location || '').split(',').map(function (v) { return v.trim(); }).filter(function (v) { return v !== ''; });
       faoximaPanelPickerSetSelected(locPicker, locValues);
+      var piClone = FxProductInbounds.get('clone');
+      if (piClone) piClone.setInitial(p.inbounds || {});
     }
     var agentSel = document.getElementById('clone_agent');
     if (agentSel) {

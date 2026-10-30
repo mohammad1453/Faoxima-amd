@@ -345,6 +345,9 @@ switch ($data['actions'] ?? '') {
             sendJsonResponse(false, "product not found", [], 200);
         }
         try {
+            if (function_exists('xpi_delete_for_products')) {
+                xpi_delete_for_products($pdo, [$data['id']]);
+            }
             $stmt = $pdo->prepare("DELETE FROM product  WHERE id = :id");
             $stmt->bindValue(":id", $data['id'], PDO::PARAM_INT);
             $stmt->execute();

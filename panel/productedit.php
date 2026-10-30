@@ -6,6 +6,11 @@ require_once __DIR__ . '/../config.php';
 if (!@include_once __DIR__ . '/lib/ad_boot.php') { http_response_code(503); header('Retry-After: 3600'); exit; }
 require_once __DIR__ . '/lib/icons.php';
 require_once __DIR__ . '/../function.php';
+require_once __DIR__ . '/lib/csrf.php';
+if (!function_exists('xpi_plan') && is_file(__DIR__ . '/../x-ui_single.php')) {
+    require_once __DIR__ . '/../x-ui_single.php';
+}
+require_once __DIR__ . '/lib/product_inbounds_ui.php';
 
 $query = $pdo->prepare("SELECT * FROM admin WHERE username=:username");
 $query->bindParam("username", $_SESSION["user"], PDO::PARAM_STR);
@@ -17,14 +22,20 @@ if (!isset($_SESSION["user"]) || !$result) {
     return;
 }
 
+fx_csrf_guard();
 $statusmessage = false;
 $infomesssage  = "";
+$piBlock       = false;
+$piConfirm     = false;
+$piPlan        = null;
 $id_product    = htmlspecialchars($_GET['id'], ENT_QUOTES, 'UTF-8');
 $product       = select("product", "*", "id", $id_product, "select");
 
-$panelQuery = $pdo->prepare("SELECT name_panel, type FROM marzban_panel ORDER BY (position = 0) ASC, position ASC, id ASC");
+$panelQuery = $pdo->prepare("SELECT id, name_panel, type, xui_api_mode, xui_api_token FROM marzban_panel ORDER BY (position = 0) ASC, position ASC, id ASC");
 $panelQuery->execute();
 $listpanel = $panelQuery->fetchAll(PDO::FETCH_ASSOC);
+$piMeta = fx_pi_meta($listpanel);
+xpi_ensure_tables($pdo);
 
 $panelTypeMap = [];
 foreach ($listpanel as $panelRow) {
@@ -39,7 +50,36 @@ if ($product == false) {
     $statusmessage = true;
     $infomesssage  = "محصول مورد نظر یافت نشد!";
 } else {
+    if (isset($_GET['action']) && in_array($_GET['action'], ['pi_pause', 'pi_requeue'], true) && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $piPanel = select("marzban_panel", "*", "id", (int) ($_POST['panel_id'] ?? 0), "select");
+        if (is_array($piPanel) && $piPanel['type'] === 'x-ui_single') {
+            if ($_GET['action'] === 'pi_pause') {
+                xpi_set_paused($pdo, (int) $product['id'], (int) $piPanel['id'], !empty($_POST['paused']));
+            } else {
+                xpi_requeue_review($pdo, (int) $product['id'], $piPanel['name_panel']);
+            }
+        }
+        header('Location: productedit.php?id=' . (int) $product['id']);
+        exit;
+    }
     if (isset($_GET['action']) && $_GET['action'] == "save") {
+        // Mapping is planned (and live-validated) before any field is written, so a rejected or unconfirmed
+        // mapping leaves the whole product untouched.
+        $piLocation = array_values(array_unique(array_filter(array_map(function ($v) {
+            return htmlspecialchars(trim((string)$v), ENT_QUOTES, 'UTF-8');
+        }, explode(',', (string)($_POST['Location_csv'] ?? ''))), function ($v) { return $v !== ''; })));
+        if (in_array('/all', $piLocation, true)) $piLocation = ['/all'];
+        $piPlan = xpi_plan($pdo, $product, $piLocation, $_POST);
+        if ($piPlan['errors']) {
+            $statusmessage = true;
+            $infomesssage  = implode('<br>', array_map('fx_pi_h', $piPlan['errors']));
+            $piBlock = true;
+        } elseif ($piPlan['needs_confirm'] && (empty($_POST['confirm_mapping']) || !hash_equals($piPlan['hash'], (string)($_POST['confirm_hash'] ?? '')))) {
+            $piConfirm = true;
+            $piBlock = true;
+        }
+    }
+    if (isset($_GET['action']) && $_GET['action'] == "save" && !$piBlock) {
         $name_product = htmlspecialchars($_POST['name_product'], ENT_QUOTES, 'UTF-8');
         $prodcutcheck = select("product", "*", "name_product", $name_product, "count");
         if ($product['name_product'] != $name_product && $prodcutcheck != 0) {
@@ -47,7 +87,15 @@ if ($product == false) {
             $infomesssage  = "نام محصول تکراری است.";
         } else {
             if ($product['name_product'] != $name_product) {
-                update("product", "name_product", $name_product, "id", $id_product);
+                // Product and its invoices are renamed together so the sync can still link services to the product.
+                try {
+                    xpi_rename_product($pdo, (int) $id_product, (string) $product['name_product'], $name_product);
+                    clearSelectCache('product');
+                } catch (Throwable $e) {
+                    error_log('[productedit] rename failed: ' . $e->getMessage());
+                    $statusmessage = true;
+                    $infomesssage  = "تغییر نام محصول انجام نشد (نام جدید برای سرویس‌های موجود معتبر نیست).";
+                }
             }
         }
 
@@ -146,6 +194,15 @@ if ($product == false) {
             }
         }
 
+        if (!$statusmessage && $piPlan !== null) {
+            try {
+                xpi_apply_plan($pdo, (int) $id_product, $piPlan);
+            } catch (Throwable $e) {
+                error_log('[productedit] mapping save failed: ' . $e->getMessage());
+                $statusmessage = true;
+                $infomesssage  = "ذخیره نگاشت اینباند انجام نشد؛ سایر تغییرات ذخیره شده‌اند.";
+            }
+        }
         if (!$statusmessage) {
             header('Location: product.php');
             exit;
@@ -196,8 +253,12 @@ if ($product == false) {
                     </div>
                 <?php endif; ?>
 
-                <?php if ($product): ?>
+                <?php if ($product && $piConfirm): ?>
+                    <?php echo fx_pi_confirm_html($piPlan, $_POST, 'productedit.php?action=save&id=' . $id_product); ?>
+                <?php endif; ?>
+                <?php if ($product && !$piConfirm): ?>
                 <form action="productedit.php?action=save&id=<?php echo $id_product; ?>" method="POST">
+                    <?php echo fx_csrf_field(); ?>
 
                     <div class="form-group">
                         <label class="form-label">نام محصول</label>
@@ -259,6 +320,8 @@ if ($product == false) {
                             <?php endforeach; ?>
                         </div>
                         <input type="hidden" name="Location_csv" id="edit_product_panel_hidden" data-panel-hidden value="<?php echo htmlspecialchars((string)($product['Location'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>">
+                        <div id="edit_product_inbounds"></div>
+                        <small style="color:var(--text-muted)">برای هر پنل ثنایی (3x-ui) انتخاب‌شده، اینباندهای همان پنل جداگانه نمایش داده می‌شود. این تنظیم روی خریدهای جدید و سرویس‌های فعال فعلی همین محصول در همان پنل اعمال می‌شود (با تأیید شما).</small>
                     </div>
 
                     <div class="form-group">
@@ -319,11 +382,13 @@ if ($product == false) {
                 </form>
                 <?php endif; ?>
             </div>
+            <?php if ($product && !$piConfirm) { echo fx_pi_status_html($pdo, $product, $listpanel, 'productedit.php?id=' . (int) $product['id']); } ?>
 
         </div>
     </section>
 </section>
 
+<script src="js/product-inbounds.js?v=pi1"></script>
 <script>
   var faoximaPanelTypeMap = <?php echo json_encode($panelTypeMap, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP); ?>;
   function faoximaChipPickerSync(picker, hiddenAttr, chipAttr) {
@@ -416,6 +481,16 @@ if ($product == false) {
   document.addEventListener('DOMContentLoaded', function () {
     faoximaUpdateIpLimitHint('edit');
     faoximaUpdateHwidLimitHint('edit');
+    var piRoot = document.getElementById('edit_product_inbounds');
+    if (piRoot) {
+      FxProductInbounds.init({
+        id: 'edit', root: piRoot, picker: document.getElementById('edit_product_panel_picker'),
+        hidden: document.getElementById('edit_product_panel_hidden'),
+        meta: <?php echo json_encode($piMeta, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP); ?>,
+        initial: <?php echo json_encode($product ? (object) xpi_get_mappings_for_product($pdo, (int) $product['id']) : new stdClass(), JSON_HEX_TAG | JSON_HEX_AMP); ?>,
+        allowRemove: true
+      });
+    }
   });
 </script>
 </body>
