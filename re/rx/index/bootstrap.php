@@ -4379,6 +4379,7 @@ $nameconfig";
         'from_id' => $from_id,
         'username' => $username,
         'type' => 'usertest',
+        'mapping_product_id' => (is_array($prodcut ?? null) && !empty($prodcut['id'])) ? (int) $prodcut['id'] : null,
         'ip_limit' => intval($nameloc['ip_limit'] ?? 0),
     );
     $expirationDate = $DataUserOut['expire']

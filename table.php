@@ -1235,6 +1235,17 @@ try {
 }
 
 try {
+    // Per-panel product inbound mapping (additive: new tables plus two nullable sync columns).
+    require_once __DIR__ . '/lib/XuiProductInbounds.php';
+    if ($pdo instanceof PDO) {
+        xpi_ensure_tables($pdo);
+        xsync_ensure_tables($pdo);
+    }
+} catch (Throwable $e) {
+    error_log('[table.php] product inbound mapping: ' . $e->getMessage());
+}
+
+try {
 
     $result = $connect->query("SHOW TABLES LIKE 'invoice'");
     $table_exists = ($result->num_rows > 0);

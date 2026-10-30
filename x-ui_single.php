@@ -8,6 +8,7 @@ if (!defined('REFACTORED_LEGACY_ROOT')) {
 require_once 'config.php';
 require_once 'request.php';
 require_once __DIR__ . '/lib/XuiInboundSync.php';
+require_once __DIR__ . '/lib/XuiProductInbounds.php';
 ini_set('error_log', 'error_log');
 
 

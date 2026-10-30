@@ -426,6 +426,7 @@ final class ServiceActionHandler extends BaseHandler
             'from_id'    => $this->user['id'],
             'username'   => $svcUsername,
             'type'       => 'usertest',
+            'mapping_product_id' => (is_array($product) && !empty($product['id'])) ? (int)$product['id'] : null,
             'ip_limit'   => (int)($invoice['ip_limit'] ?? 0),
         ];
 

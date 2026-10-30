@@ -444,11 +444,15 @@ class ManagePanel
             }
         } elseif ($Get_Data_Panel['type'] == "x-ui_single") {
             $subId = bin2hex(random_bytes(8));
-            if (isset($Get_Data_Product['inbounds']) and $Get_Data_Product['inbounds'] != null) {
-                $inbounds = $Get_Data_Product['inbounds'];
-            } else {
-                $inbounds = $Get_Data_Panel['inboundid'];
+            // Explicit per-panel mapping wins; otherwise product.inbounds, then the panel default (unchanged legacy order).
+            $resolvedInbounds = xpi_resolve_inbounds($pdo, $Get_Data_Product, $Get_Data_Panel, $Data_Config);
+            if (!empty($resolvedInbounds['error'])) {
+                return array(
+                    'status' => 'Unsuccessful',
+                    'msg' => $resolvedInbounds['error']
+                );
             }
+            $inbounds = $resolvedInbounds['raw'];
             $productIpLimit = isset($Data_Config['ip_limit'])
                 ? intval($Data_Config['ip_limit'])
                 : (isset($Get_Data_Product['ip_limit']) ? intval($Get_Data_Product['ip_limit']) : 0);
@@ -472,7 +476,9 @@ class ManagePanel
                     $Output['status'] = 'Unsuccessful';
                     $Output['msg'] = $data_Output['msg'];
                 } else {
-                    if (!(isset($Get_Data_Product['inbounds']) and $Get_Data_Product['inbounds'] != null)) {
+                    if ($resolvedInbounds['source'] === 'mapping') {
+                        xpi_record_creation($Get_Data_Panel['name_panel'], (int) $Get_Data_Panel['id'], $usernameC, $resolvedInbounds['product_id'], $resolvedInbounds['ids'], $Data_Config['id_order'] ?? ($Data_Config['invoice'] ?? null));
+                    } elseif (!(isset($Get_Data_Product['inbounds']) and $Get_Data_Product['inbounds'] != null)) {
                         xsync_record_creation($Get_Data_Panel['name_panel'], $usernameC, xui_parse_inbound_ids($inbounds));
                     }
                     $subscriptionUrl = rtrim($Get_Data_Panel['linksubx'], '/') . "/{$subId}";
