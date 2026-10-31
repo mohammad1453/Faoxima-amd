@@ -325,7 +325,8 @@ function xpi_plan($pdo, $product, array $locationNames, array $post, $fetch = nu
                 'added' => array_values(array_diff($new, $cur)), 'removed' => array_values(array_diff($cur, $new)),
                 'services' => $services, 'baseline' => $baseline, 'baseline_removal' => $baselineRemoval,
             );
-            if (($action !== 'keep') && $services > 0) {
+            // Restoring a mapping after '/all' also schedules reconciliation of existing customers.
+            if (($action !== 'keep' || $restore) && $services > 0) {
                 $plan['needs_confirm'] = true;
             }
         }

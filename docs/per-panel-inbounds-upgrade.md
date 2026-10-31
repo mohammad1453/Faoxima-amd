@@ -3,7 +3,7 @@
 Branch: `feature/per-panel-inbounds` on `github.com/mohammad1453/Faoxima-amd`
 Base commit (what production must currently match): `e17c188`
 
-This upgrade replaces 15 application files and runs the existing `table.php` migration once.
+This upgrade replaces 16 application files and runs the existing `table.php` migration once.
 It does **not** touch `.env`, `config.php`, `docker-compose.yml`, Nginx, certificates, ports
 (`127.0.0.1:18080` / `127.0.0.1:18443`), `URL_PATH=faoxima`, or any Docker service definition.
 No image rebuild, no `install.sh`, no `docker compose up/down`.
@@ -106,7 +106,7 @@ The second command needs `php` on the host; if it is not installed, run the test
 docker run --rm --entrypoint php -v /root/faoxima-src-$TS:/src -w /src faoxima_app:latest scripts/tests/xui-product-inbounds.php | tail -n 1
 ```
 
-Expected: `All 27 tests passed`.
+Expected: `All 28 tests passed`.
 
 **Safety check — production must still be the base version.** This compares every file the upgrade touches with
 its content at commit `e17c188`. Any `CHANGED` line means production was modified or is a different release:
@@ -130,7 +130,7 @@ done
 
 Files updated: `api/handlers/ServiceActionHandler.php`, `api/product.php`, `lib/XuiInboundSync.php`,
 `panel/product.php`, `panel/productedit.php`, `panels.php`, `re/rx/function/csv_matching_helpers.php`,
-`re/rx/index/bootstrap.php`, `table.php`, `x-ui_single.php`.
+`re/rx/index/bootstrap.php`, `sales_readiness.php`, `table.php`, `x-ui_single.php`.
 
 Files added: `lib/XuiProductInbounds.php`, `panel/product_inbounds.php`, `panel/js/product-inbounds.js`,
 `panel/lib/product_inbounds_ui.php`, `scripts/tests/xui-product-inbounds.php`, `docs/per-panel-inbounds-upgrade.md`.
@@ -152,6 +152,24 @@ cd /opt/faoxima && for f in $(cd /root/faoxima-src-$TS && git diff --name-only e
 ```
 
 Every line must say `No syntax errors detected`.
+
+The bot loads `re/rx/*` through generated `.compiled.php` bundles. They rebuild automatically when a source file's
+mtime/size/inode changes (which the copy above does). After the bot has handled one message (send `/start` to it),
+confirm the rebuilt bundles contain the new code; both lines must print a number greater than 0:
+
+```bash
+grep -c mapping_product_id /opt/faoxima/re/rx/index/.compiled.php
+```
+
+```bash
+grep -c xpi_cascade_panel_delete /opt/faoxima/re/rx/function/.compiled.php
+```
+
+If either prints `0` after the bot answered, delete the stale bundles (safe: they are regenerated on the next request):
+
+```bash
+rm -f /opt/faoxima/re/rx/index/.compiled.php /opt/faoxima/re/rx/index/.compiled.map /opt/faoxima/re/rx/function/.compiled.php /opt/faoxima/re/rx/function/.compiled.map
+```
 
 ---
 
@@ -176,8 +194,8 @@ Expected: both tables listed, both columns listed, product count unchanged from 
 
 ## 5. Restart?
 
-Not required: the `app` container bind-mounts `/opt/faoxima`, and the PHP image does not enable OPcache
-timestamp caching in this project. Only if the new product UI does not appear after a hard browser refresh, restart
+Not expected to be required: the `app` container bind-mounts `/opt/faoxima`, and this project ships no OPcache
+configuration, so PHP's defaults (timestamp revalidation) apply. This was not verified on your server. Only if the new product UI does not appear after a hard browser refresh, restart
 **just** the PHP container (same image, same ports, same config):
 
 ```bash
@@ -200,7 +218,18 @@ Use a test product and a test customer first.
    selected inbounds of **that** panel.
 4. Edit the product and replace one inbound (e.g. Germany 1,3,5 → 1,3,6). You must see the confirmation page with
    the number of services to check. Confirm.
-5. Wait 2–6 minutes (cron `xui_inbound_sync`, every 2 minutes). The product edit page shows the per-panel sync
+5. Wait 2–6 minutes (cron `xui_inbound_sync`, every 2 minutes; check that it is enabled in the bot's cron
+   settings — default interval 2 minutes). To run one pass immediately and see it work:
+
+   ```bash
+   cd /opt/faoxima && docker compose exec -T app php cronbot/xui_inbound_sync.php
+   ```
+
+   ```bash
+   docker compose exec -T db sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" -e "SELECT email, state, managed_ids, FROM_UNIXTIME(updated_at) updated FROM xui_sync_service WHERE product_id IS NOT NULL ORDER BY updated_at DESC LIMIT 10;"'
+   ```
+
+   `updated` must advance after each pass. The product edit page shows the per-panel sync
    status; the test client must gain inbound 6 first and only then lose 5.
 6. Legacy-login panel (if you have one): only one inbound is selectable; mismatching existing clients appear
    as "review / legacy_mode_manual_migration", nothing is moved.
@@ -257,7 +286,7 @@ zcat "$B/db.sql.gz" | docker compose exec -T db sh -c 'exec mysql -uroot -p"$MYS
 
 ## 8. What was tested and what was not
 
-Executed (`php scripts/tests/xui-product-inbounds.php`, SQLite + fake token-mode panel API, 27 tests):
+Executed (`php scripts/tests/xui-product-inbounds.php`, SQLite + fake token-mode panel API, 28 tests):
 resolver precedence and panel isolation (identical IDs on different panels), `/all` behaviour, legacy single-inbound
 rule, plan validation (unknown inbound, unreachable panel, unchanged/unloaded sections), version/baseline handling,
 transactional product rename, panel rename/delete cascade, attach-before-detach ordering, failed attach never
@@ -272,3 +301,13 @@ Not executed (needs your real environment):
   (token mode) and `inbounds/list` + cookie login (legacy). The attach/detach endpoints are the ones the existing
   XuiInboundSync already uses; confirm your panel version supports them before mapping many customers.
 - The admin pages end-to-end (no MySQL in the development container).
+
+## 9. Known limits
+
+- Extra bots under `BOTS_DIR` (separate code copies and databases) are not upgraded by these steps.
+- If a product's mapping is removed and later re-added, its existing services are re-adopted from the new
+  baseline; inbounds the sync attached earlier are then treated as not owned and are never detached automatically
+  (safe, but needs manual cleanup if you want them gone).
+- Panels whose names contain HTML special characters (`& < > " '`) cannot be given a mapping (the product edit
+  form stores such names escaped); the save is refused with a message.
+- Sync speed: up to 40 services per pass every 2 minutes (roughly a few hundred services per hour, estimated).

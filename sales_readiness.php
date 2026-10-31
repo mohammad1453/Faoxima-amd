@@ -263,15 +263,21 @@ function rx_sr_offer_stage(array $offers, array $panel)
     return rx_sr_st('fail', $msg);
 }
 
-function rx_sr_products_override(array $offers, $needCustom)
+function rx_sr_products_override(array $offers, $needCustom, array $panel = array())
 {
     if ($needCustom || empty($offers['valid'])) {
         return false;
     }
     foreach ($offers['valid'] as $product) {
-        if (empty(rx_sr_json_array($product['inbounds'] ?? ''))) {
-            return false;
+        if (!empty(rx_sr_json_array($product['inbounds'] ?? ''))) {
+            continue;
         }
+        // An explicit per-panel inbound mapping also supplies the inbounds for this product.
+        if (function_exists('xpi_get_mapping') && !empty($panel['id']) && !empty($product['id']) && ($panel['type'] ?? '') === 'x-ui_single'
+            && xpi_covers($product, $panel['name_panel'] ?? '') && xpi_get_mapping($GLOBALS['pdo'], (int) $product['id'], (int) $panel['id'])) {
+            continue;
+        }
+        return false;
     }
     return true;
 }
@@ -284,7 +290,7 @@ function rx_sr_stage_delivery(array $panel, array $offers)
     }
     $missing = [];
     $notes = [];
-    $override = rx_sr_products_override($offers, $offers['custom']);
+    $override = rx_sr_products_override($offers, $offers['custom'], $panel);
     $inbounds = rx_sr_json_array($panel['inbounds'] ?? '');
     if ($type === 'marzban' || $type === 'pasarguard') {
         $isGroups = $type === 'pasarguard' || (string) ($panel['version_panel'] ?? '0') === '1';

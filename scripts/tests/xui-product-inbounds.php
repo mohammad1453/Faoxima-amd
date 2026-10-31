@@ -292,6 +292,20 @@ $tests['confirmation required only when existing services are affected'] = funct
     $plan = xpi_plan($pdo, $p, ['Germany'], $post, $live);
     check($plan['needs_confirm'] && $plan['panels'][$de['id']]['services'] === 1, 'counts only eligible invoices of this product on this panel');
 };
+$tests['restoring a mapping after /all with existing customers requires confirmation'] = function () {
+    $pdo = new_db();
+    fake_reset();
+    $de = add_panel($pdo, 'Germany');
+    $p = add_product($pdo, 'P', 'Germany');
+    save_mapping($pdo, $p, $de, [1, 3]);
+    $pdo->exec("UPDATE product SET Location = '/all' WHERE id = {$p['id']}");
+    $pAll = array_merge($p, ['Location' => '/all']);
+    $plan = xpi_plan($pdo, $pAll, ['Germany'], [], 'xpi_fetch_panel_inbounds');
+    check(!$plan['errors'] && $plan['panels'][$de['id']]['restore'] && !$plan['needs_confirm'], 'no customers: restore without confirmation');
+    add_invoice($pdo, 'i1', 'u1', 'Germany', 'P');
+    $plan = xpi_plan($pdo, $pAll, ['Germany'], [], 'xpi_fetch_panel_inbounds');
+    check($plan['needs_confirm'] && $plan['panels'][$de['id']]['services'] === 1, 'restore with customers needs confirmation');
+};
 $tests['product rename updates exactly the matching invoices in one transaction'] = function () {
     $pdo = new_db();
     $p = add_product($pdo, 'Gold', 'Germany');
